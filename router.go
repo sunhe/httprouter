@@ -136,7 +136,11 @@ func (ps Params) MatchedRoutePath() string {
 // Router is a http.Handler which can be used to dispatch requests to different
 // handler functions via configurable routes
 type Router struct {
-	trees map[string]*node
+	// sunhe {
+	//trees map[string]*node
+	exactTrees map[string]*node
+	paramTrees map[string]*node
+	//}
 
 	paramsPool sync.Pool
 	maxParams  uint16
@@ -307,17 +311,47 @@ func (r *Router) Handle(method, path string, handle Handle) {
 		handle = r.saveMatchedRoutePath(path, handle)
 	}
 
-	if r.trees == nil {
-		r.trees = make(map[string]*node)
-	}
+	// sunhe {
+	/*
+		if r.trees == nil {
+			r.trees = make(map[string]*node)
+		}
 
-	root := r.trees[method]
-	if root == nil {
-		root = new(node)
-		r.trees[method] = root
+		root := r.trees[method]
+		if root == nil {
+			root = new(node)
+			r.trees[method] = root
 
-		r.globalAllowed = r.allowed("*", "")
+			r.globalAllowed = r.allowed("*", "")
+		}
+
+	*/
+	var root *node
+	if countParams(path) == 0 {
+		if r.exactTrees == nil {
+			r.exactTrees = make(map[string]*node)
+		}
+		root = r.exactTrees[method]
+		if root == nil {
+			root = new(node)
+			r.exactTrees[method] = root
+
+			r.globalAllowed = r.allowed("*", "")
+		}
+
+	} else {
+		if r.paramTrees == nil {
+			r.paramTrees = make(map[string]*node)
+		}
+		root = r.paramTrees[method]
+		if root == nil {
+			root = new(node)
+			r.paramTrees[method] = root
+
+			r.globalAllowed = r.allowed("*", "")
+		}
 	}
+	//}
 
 	root.addRoute(path, handle)
 
@@ -392,7 +426,17 @@ func (r *Router) recv(w http.ResponseWriter, req *http.Request) {
 // values. Otherwise the third return value indicates whether a redirection to
 // the same path with an extra / without the trailing slash should be performed.
 func (r *Router) Lookup(method, path string) (Handle, Params, bool) {
-	if root := r.trees[method]; root != nil {
+	//sunhe {
+	//if root := r.trees[method]; root != nil {
+	var root *node
+
+	if countParams(path) == 0 {
+		root = r.exactTrees[method]
+	} else {
+		root = r.paramTrees[method]
+	}
+	if root != nil {
+		//}
 		handle, ps, tsr := root.getValue(path, r.getParams)
 		if handle == nil {
 			r.putParams(ps)
@@ -412,7 +456,10 @@ func (r *Router) allowed(path, reqMethod string) (allow string) {
 	if path == "*" { // server-wide
 		// empty method is used for internal calls to refresh the cache
 		if reqMethod == "" {
-			for method := range r.trees {
+			//sunhe {
+			//for method := range r.trees {
+			for method := range r.paramTrees {
+				//}
 				if method == http.MethodOptions {
 					continue
 				}
@@ -423,18 +470,48 @@ func (r *Router) allowed(path, reqMethod string) (allow string) {
 			return r.globalAllowed
 		}
 	} else { // specific path
-		for method := range r.trees {
+		//sunhe {
+		/*
+			for method := range r.trees {
+				// Skip the requested method - we already tried this one
+				if method == reqMethod || method == http.MethodOptions {
+					continue
+				}
+
+				handle, _, _ := r.trees[method].getValue(path, nil)
+				if handle != nil {
+					// Add request method to list of allowed methods
+					allowed = append(allowed, method)
+				}
+			}
+		*/
+		for method := range r.exactTrees {
 			// Skip the requested method - we already tried this one
 			if method == reqMethod || method == http.MethodOptions {
 				continue
 			}
 
-			handle, _, _ := r.trees[method].getValue(path, nil)
+			handle, _, _ := r.exactTrees[method].getValue(path, nil)
 			if handle != nil {
 				// Add request method to list of allowed methods
 				allowed = append(allowed, method)
 			}
 		}
+		if len(allowed) == 0 {
+			for method := range r.paramTrees {
+				// Skip the requested method - we already tried this one
+				if method == reqMethod || method == http.MethodOptions {
+					continue
+				}
+
+				handle, _, _ := r.paramTrees[method].getValue(path, nil)
+				if handle != nil {
+					// Add request method to list of allowed methods
+					allowed = append(allowed, method)
+				}
+			}
+		}
+		//}
 	}
 
 	if len(allowed) > 0 {
@@ -464,7 +541,51 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
 	path := req.URL.Path
 
-	if root := r.trees[req.Method]; root != nil {
+	//sunhe {
+	/*
+		if root := r.trees[req.Method]; root != nil {
+			if handle, ps, tsr := root.getValue(path, r.getParams); handle != nil {
+				if ps != nil {
+					handle(w, req, *ps)
+					r.putParams(ps)
+				} else {
+					handle(w, req, nil)
+				}
+				return
+			} else if req.Method != http.MethodConnect && path != "/" {
+				// Moved Permanently, request with GET method
+				code := http.StatusMovedPermanently
+				if req.Method != http.MethodGet {
+					// Permanent Redirect, request with same method
+					code = http.StatusPermanentRedirect
+				}
+
+				if tsr && r.RedirectTrailingSlash {
+					if len(path) > 1 && path[len(path)-1] == '/' {
+						req.URL.Path = path[:len(path)-1]
+					} else {
+						req.URL.Path = path + "/"
+					}
+					http.Redirect(w, req, req.URL.String(), code)
+					return
+				}
+
+				// Try to fix the request path
+				if r.RedirectFixedPath {
+					fixedPath, found := root.findCaseInsensitivePath(
+						CleanPath(path),
+						r.RedirectTrailingSlash,
+					)
+					if found {
+						req.URL.Path = fixedPath
+						http.Redirect(w, req, req.URL.String(), code)
+						return
+					}
+				}
+			}
+		}
+	*/
+	if root := r.exactTrees[req.Method]; root != nil {
 		if handle, ps, tsr := root.getValue(path, r.getParams); handle != nil {
 			if ps != nil {
 				handle(w, req, *ps)
@@ -505,6 +626,48 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			}
 		}
 	}
+	if root := r.paramTrees[req.Method]; root != nil {
+		if handle, ps, tsr := root.getValue(path, r.getParams); handle != nil {
+			if ps != nil {
+				handle(w, req, *ps)
+				r.putParams(ps)
+			} else {
+				handle(w, req, nil)
+			}
+			return
+		} else if req.Method != http.MethodConnect && path != "/" {
+			// Moved Permanently, request with GET method
+			code := http.StatusMovedPermanently
+			if req.Method != http.MethodGet {
+				// Permanent Redirect, request with same method
+				code = http.StatusPermanentRedirect
+			}
+
+			if tsr && r.RedirectTrailingSlash {
+				if len(path) > 1 && path[len(path)-1] == '/' {
+					req.URL.Path = path[:len(path)-1]
+				} else {
+					req.URL.Path = path + "/"
+				}
+				http.Redirect(w, req, req.URL.String(), code)
+				return
+			}
+
+			// Try to fix the request path
+			if r.RedirectFixedPath {
+				fixedPath, found := root.findCaseInsensitivePath(
+					CleanPath(path),
+					r.RedirectTrailingSlash,
+				)
+				if found {
+					req.URL.Path = fixedPath
+					http.Redirect(w, req, req.URL.String(), code)
+					return
+				}
+			}
+		}
+	}
+	//}
 
 	if req.Method == http.MethodOptions && r.HandleOPTIONS {
 		// Handle OPTIONS requests
